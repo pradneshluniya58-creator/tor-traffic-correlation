@@ -1,0 +1,1027 @@
+# TOR Hackathon 2025: Complete Guide - Problem Analysis & Solutions
+
+## Table of Contents
+1. [Problem Statement Understanding](#problem-understanding)
+2. [How TOR Works (Visual Breakdown)](#tor-basics)
+3. [What You Need to Build](#requirements)
+4. [Solution Approaches](#solution-approaches)
+5. [Technical Implementation Paths](#implementation)
+6. [Team Strategy & Timeline](#strategy)
+
+---
+
+## Problem Understanding
+
+### The Core Challenge
+**Goal:** Build a system that helps police trace TOR network users by identifying their real IP addresses (finding the entry node) even though they use TOR to hide their identity.
+
+**In Plain English:** Someone uses TOR to hide their location. Your job: Figure out where they really are.
+
+### The Problem is Hard Because:
+- TOR is specifically designed to prevent this
+- Data is encrypted at multiple layers
+- The person connecting (user) can be in any country
+- Exit nodes change constantly
+
+### What Success Looks Like
+According to the problem statement, you need:
+
+1. **Automated TOR topology mapping** - Automatically find and list all active TOR relay nodes
+2. **Node correlation system** - Match incoming traffic to outgoing traffic
+3. **Origin identification** - Pinpoint the entry node with confidence metrics (how sure you are)
+4. **Visualization dashboard** - Show the traced path on a map/diagram
+5. **Forensic reports** - Generate documents that could be used as evidence
+
+---
+
+## TOR Basics (Simple Breakdown)
+
+### How Normal Internet Works
+```
+Your Computer â†’ ISP â†’ Server
+(Everyone sees: You are at IP 192.168.1.5 visiting example.com)
+```
+
+### How TOR Works
+```
+Your Computer â†’ Node A (Entry/Guard) â†’ Node B (Middle) â†’ Node C (Exit) â†’ Server
+        â†“
+Encryption Layer 1 added
+
+     Node A â†’ Node B â†’ Node C removed Layer 1
+        â†“
+Encryption Layer 2 added
+                   â†“
+                Node B â†’ Node C removed Layer 2
+                   â†“
+Encryption Layer 3 added
+                        â†“
+                       Node C removed Layer 3
+                        â†“
+                      Server sees: comes from Node C's IP
+                                   (Doesn't know about You)
+```
+
+### Key Points About TOR Nodes
+
+| Node Type | Knows What? | Knows Where? |
+|-----------|------------|-------------|
+| **Entry/Guard** | It's the start | Your real IP address |
+| **Middle** | Just forwarding | Nothing specific |
+| **Exit** | Which website | Not your real IP |
+
+**The Police Problem:** If they control even 2 of these nodes (entry + exit), they can match the timing/volume patterns and connect them.
+
+---
+
+## What You Need to Build
+
+### 6 Functional Requirements from Problem Statement
+
+#### 1. TOR Data Collection
+**What:** Automatically get information about all active TOR relay nodes
+**Input:** TOR network (the live network of computers)
+**Output:** A list of all relays with their IPs, speeds, locations, etc.
+
+**How It Works:**
+- TOR provides public APIs called "Onionoo" and "CollecTor"
+- You make HTTP requests to get JSON data about relay nodes
+- This is free, public information
+
+**Code Concept (Pseudo-code):**
+```python
+# Connect to TOR metrics server
+GET https://onionoo.torproject.org/summary
+
+# Response is JSON like:
+{
+  "relays": [
+    {
+      "nickname": "relay1",
+      "fingerprint": "ABC123...",
+      "addresses": ["185.220.101.45"],
+      "running": true,
+      "exit_addresses": ["185.220.101.45"],
+      "bandwidth": 1000000
+    },
+    {
+      "nickname": "relay2",
+      ...
+    }
+  ]
+}
+```
+
+#### 2. Node Correlation
+**What:** Compare traffic entering TOR network with traffic leaving it
+**Core Idea:** If 1000 bytes enter node A at time 10:00:05 and 1000 bytes leave node C at time 10:00:08, maybe the same person is using both?
+
+**Simple Example:**
+```
+Entry Node Activity:
+- 10:00:05 â†’ 1000 bytes received
+- 10:00:06 â†’ 500 bytes received
+- 10:00:07 â†’ 1500 bytes received
+Total packet pattern: [1000, 500, 1500]
+
+Exit Node Activity:
+- 10:00:08 â†’ 1000 bytes sent (received 1000 earlier = 3 second delay)
+- 10:00:09 â†’ 500 bytes sent
+- 10:00:10 â†’ 1500 bytes sent
+Total packet pattern: [1000, 500, 1500]
+
+MATCH FOUND! Same person probably used both nodes!
+```
+
+**Why Hard:**
+- Thousands of people using TOR
+- Need to store HUGE amounts of timing data
+- Need to compare millions of patterns
+- TOR adds random delays to prevent this
+
+#### 3. Entry Node Identification
+**What:** Once you find correlations, identify the actual entry node
+**How:** The entry node is the first one in the chain - it's the one that saw the user's real IP
+
+**Accuracy Improvement:** With each new exit node you identify, your confidence increases (more evidence = more sure)
+
+#### 4. Visualization
+**What:** Draw a picture/diagram showing the traced path
+**Example Display:**
+```
+User's Real IP (192.168.1.5) 
+        â†“
+[Entry Node: relay_guard_1]  (confidence: 95%)
+        â†“
+[Middle Node: relay_middle_3] 
+        â†“
+[Exit Node: relay_exit_7]
+        â†“
+Website: example.com
+```
+
+Also show:
+- Timeline of when traffic moved through each node
+- Confidence score (0-100%)
+- Bandwidth used
+
+#### 5. Forensic Support
+**What:** Take captured network traffic (PCAP files) and analyze them
+**Where From:** Police can provide actual captured network packets
+**What You Do:** Compare those packets against your correlation system
+
+**Technical:** PCAP = "Packet Capture" files (raw network data)
+- Contains every byte sent/received
+- Includes timestamps
+- You parse it to extract packet sizes and timing
+
+#### 6. Entry/Guard Node Identification
+**What:** Reliably pinpoint which entry node was used
+**How:** Use the timing correlations to narrow down possibilities
+**Output:** "This person almost certainly entered the TOR network through relay X"
+
+---
+
+## Solution Approaches
+
+### Approach 1: Timing-Based Correlation â­ Most Practical for Hackathon
+
+**Core Concept:** Match packets by timing patterns
+
+**How It Works:**
+
+1. **Collect Data:**
+   - Monitor traffic entering all entry nodes (timestamps + data volume)
+   - Monitor traffic exiting all exit nodes (timestamps + data volume)
+
+2. **Create Signatures:**
+   ```
+   Entry Node Traffic: [t1, size1], [t2, size2], [t3, size3], ...
+   Exit Node Traffic:  [t1', size1'], [t2', size2'], [t3', size3'], ...
+   ```
+
+3. **Match Signatures:**
+   ```
+   Compare if size1 â‰ˆ size1' AND (t1' - t1) â‰ˆ constant_delay
+   ```
+
+**Python Implementation Strategy:**
+
+```python
+import requests
+import json
+from datetime import datetime
+
+# Step 1: Get TOR relay data from Onionoo API
+def fetch_relay_data():
+    url = "https://onionoo.torproject.org/summary"
+    response = requests.get(url)
+    return response.json()
+
+# Step 2: Extract entry nodes (have Exit flag = False)
+def get_entry_nodes(relay_data):
+    entry_nodes = []
+    for relay in relay_data['relays']:
+        if 'Exit' not in relay.get('flags', []):
+            entry_nodes.append({
+                'nickname': relay['nickname'],
+                'fingerprint': relay['fingerprint'],
+                'addresses': relay['addresses']
+            })
+    return entry_nodes
+
+# Step 3: Extract exit nodes (have Exit flag)
+def get_exit_nodes(relay_data):
+    exit_nodes = []
+    for relay in relay_data['relays']:
+        if 'Exit' in relay.get('flags', []):
+            exit_nodes.append({
+                'nickname': relay['nickname'],
+                'fingerprint': relay['fingerprint'],
+                'addresses': relay['addresses'],
+                'exit_addresses': relay.get('exit_addresses', [])
+            })
+    return exit_nodes
+
+# Step 4: Correlation function
+def correlate_traffic(entry_traffic, exit_traffic, time_threshold=5):
+    matches = []
+    for entry in entry_traffic:
+        for exit in exit_traffic:
+            # Calculate time delay
+            time_diff = (exit['timestamp'] - entry['timestamp']).total_seconds()
+            
+            # Check if sizes match and delay is reasonable
+            if (entry['bytes'] == exit['bytes'] and 
+                0 < time_diff < time_threshold):
+                matches.append({
+                    'entry_node': entry['node_id'],
+                    'exit_node': exit['node_id'],
+                    'confidence': 100 - (time_diff * 10)  # Simple confidence
+                })
+    return matches
+
+# Step 5: Generate report
+def generate_report(matches):
+    report = "TOR Correlation Analysis Report\n"
+    report += "=" * 50 + "\n\n"
+    for match in matches:
+        report += f"Entry Node: {match['entry_node']}\n"
+        report += f"Exit Node: {match['exit_node']}\n"
+        report += f"Confidence: {match['confidence']:.1f}%\n"
+        report += "-" * 50 + "\n"
+    return report
+```
+
+**Benefits:**
+- âœ… Uses publicly available TOR data
+- âœ… Relatively simple logic
+- âœ… Can work with limited data
+- âœ… Produces measurable confidence scores
+
+**Drawbacks:**
+- âŒ Modern TOR adds padding to hide patterns
+- âŒ Many false positives in crowded networks
+- âŒ Requires real traffic data to work well
+- âŒ Accuracy only ~30-50% in practice
+
+**What You're Really Doing:**
+You're like a detective matching fingerprints:
+- Entry fingerprint: "1000 bytes â†’ 500 bytes â†’ 1500 bytes"
+- Exit fingerprint: "1000 bytes â†’ 500 bytes â†’ 1500 bytes"
+- If they match and timing is close = probably same person
+
+---
+
+### Approach 2: Traffic Volume Analysis
+
+**Core Concept:** Big traffic = bigger fingerprint
+
+**How It Works:**
+1. When someone downloads a file, lots of bytes flow through the entry node
+2. Then lots of bytes flow out the exit node
+3. Match them by volume
+
+**Python Concept:**
+```python
+def volume_correlation(entry_node_stats, exit_node_stats):
+    # entry_node_stats = {'hour': bytes_transferred, ...}
+    matches = []
+    
+    for entry_id, entry_bytes in entry_node_stats.items():
+        for exit_id, exit_bytes in exit_node_stats.items():
+            # If person downloaded 100MB, both nodes see ~100MB
+            if abs(entry_bytes - exit_bytes) < 1000:  # Within 1KB
+                matches.append({
+                    'entry': entry_id,
+                    'exit': exit_id,
+                    'match_strength': 100 - abs(entry_bytes - exit_bytes)
+                })
+    return matches
+```
+
+**Benefits:**
+- âœ… Simpler than timing (just counts bytes)
+- âœ… Works for large transfers
+- âœ… Less affected by random delays
+
+**Drawbacks:**
+- âŒ Lots of people download similar sizes
+- âŒ False positives very high
+- âŒ TOR now pads all traffic to hide volumes
+
+---
+
+### Approach 3: Machine Learning Deanonymization
+
+**Core Concept:** Train AI to recognize patterns
+
+**How It Works:**
+1. Collect thousands of known TOR sessions (with volunteer data)
+2. Train ML model to recognize patterns
+3. When new traffic comes, model guesses origin with 70-80% accuracy
+
+**Implementation (uses Python + TensorFlow):**
+```python
+import numpy as np
+from tensorflow import keras
+
+# Create training data
+X_train = []  # Traffic patterns
+y_train = []  # Ground truth (which entry node)
+
+# Load known correlations
+for known_session in known_sessions:
+    pattern = extract_pattern(known_session)
+    entry_node = known_session['entry_node_id']
+    X_train.append(pattern)
+    y_train.append(entry_node)
+
+# Train model
+model = keras.Sequential([
+    keras.layers.Dense(128, activation='relu'),
+    keras.layers.Dense(64, activation='relu'),
+    keras.layers.Dense(num_entry_nodes, activation='softmax')
+])
+
+model.compile(optimizer='adam', loss='categorical_crossentropy')
+model.fit(X_train, y_train, epochs=10)
+
+# Predict unknown traffic
+unknown_pattern = extract_pattern(unknown_traffic)
+prediction = model.predict([unknown_pattern])
+entry_node = np.argmax(prediction)
+confidence = prediction[0][entry_node]
+```
+
+**Benefits:**
+- âœ… Very accurate (70-90% success)
+- âœ… Automatically finds complex patterns
+- âœ… Works on new data it hasn't seen
+
+**Drawbacks:**
+- âŒ Requires LOTS of training data (thousands of sessions)
+- âŒ Complex to set up
+- âŒ Black box - hard to explain why it works
+- âŒ Easy to fool with adversarial data
+
+**Reality Check:** This is what academic research uses. Very hard for a hackathon.
+
+---
+
+### Approach 4: Network Graph Analysis â­ Good for Visualization
+
+**Core Concept:** Map all TOR nodes and find suspicious patterns in the network
+
+**How It Works:**
+1. Build graph of all TOR relays and their connections
+2. Look for isolated clusters
+3. Find nodes that always work together
+4. These might be controlled by same attacker
+
+**Python with NetworkX:**
+```python
+import networkx as nx
+import matplotlib.pyplot as plt
+
+# Create graph
+G = nx.DiGraph()
+
+# Add nodes
+for relay in relay_data['relays']:
+    G.add_node(relay['fingerprint'], 
+               nickname=relay['nickname'],
+               type='entry' if 'Exit' not in relay['flags'] else 'exit')
+
+# Add edges (which nodes connect to which)
+for relay in relay_data['relays']:
+    for other_relay in relay_data['relays']:
+        # Connect if they share bandwidth class or location
+        if same_network(relay, other_relay):
+            G.add_edge(relay['fingerprint'], 
+                      other_relay['fingerprint'])
+
+# Find suspicious clusters
+clusters = list(nx.community.greedy_modularity_communities(G))
+
+# Visualize
+nx.draw_networkx(G, 
+                 node_color='lightblue',
+                 with_labels=False,
+                 node_size=50)
+plt.show()
+```
+
+**Benefits:**
+- âœ… Cool visualizations
+- âœ… Shows network structure
+- âœ… Can identify colluding relays
+- âœ… Relatively easy to understand
+
+**Drawbacks:**
+- âŒ Doesn't directly trace users
+- âŒ Requires deep network analysis
+- âŒ Hard to prove suspicious patterns are real
+
+---
+
+### Approach 5: Website Fingerprinting (Advanced)
+
+**Core Concept:** Each website looks unique (like a fingerprint)
+
+**How It Works:**
+1. When you visit amazon.com, the packet sizes follow a pattern
+2. When you visit youtube.com, different packet sizes
+3. Monitor exit node traffic
+4. Recognize which site from packet pattern
+5. Then correlate that pattern to entry node to find user
+
+**Why Hard:**
+- Requires visiting 1000+ sites and recording patterns
+- Very complex statistics
+- Modern defenses defeat this
+
+**Skip This for Hackathon** - Too advanced
+
+---
+
+## Implementation
+
+### Tech Stack Recommendation
+
+**Best Choice: Python**
+
+Why? 
+- Libraries already exist for TOR analysis (Stem, Onionoo)
+- Easy to learn
+- Perfect for data processing
+- Good for visualization
+
+### What You'll Use
+
+#### Core Libraries
+
+```python
+# For TOR data collection
+pip install requests  # HTTP requests
+pip install stem      # TOR control library
+
+# For data processing
+pip install pandas    # Data tables
+pip install numpy     # Math operations
+
+# For visualization
+pip install matplotlib  # Charts
+pip install networkx    # Network graphs
+
+# For web interface (optional)
+pip install flask     # Simple web server
+```
+
+#### Step-by-Step Implementation
+
+**Phase 1: Collect TOR Data (Week 1)**
+
+```python
+# tor_collector.py
+import requests
+import json
+from datetime import datetime
+
+class TORDataCollector:
+    def __init__(self):
+        self.onionoo_url = "https://onionoo.torproject.org"
+    
+    def get_summary(self):
+        """Get summary of all relays"""
+        response = requests.get(f"{self.onionoo_url}/summary")
+        return response.json()
+    
+    def get_details(self):
+        """Get detailed info about all relays"""
+        response = requests.get(f"{self.onionoo_url}/details")
+        return response.json()
+    
+    def get_entry_guards(self):
+        """Get only guard/entry nodes"""
+        data = self.get_summary()
+        entry_nodes = []
+        for relay in data.get('relays', []):
+            if 'Exit' not in relay.get('flags', []):
+                entry_nodes.append(relay)
+        return entry_nodes
+    
+    def get_exit_relays(self):
+        """Get only exit nodes"""
+        data = self.get_summary()
+        exit_nodes = []
+        for relay in data.get('relays', []):
+            if 'Exit' in relay.get('flags', []):
+                exit_nodes.append(relay)
+        return exit_nodes
+    
+    def save_to_file(self, data, filename):
+        """Save collected data"""
+        with open(filename, 'w') as f:
+            json.dump(data, f, indent=2)
+
+# Usage
+collector = TORDataCollector()
+all_relays = collector.get_summary()
+entry_guards = collector.get_entry_guards()
+exit_relays = collector.get_exit_relays()
+
+collector.save_to_file(all_relays, 'tor_data.json')
+print(f"Found {len(entry_guards)} entry guards")
+print(f"Found {len(exit_relays)} exit relays")
+```
+
+**Phase 2: Build Correlation System (Week 2)**
+
+```python
+# correlation_engine.py
+import json
+from datetime import datetime
+from collections import defaultdict
+
+class CorrelationEngine:
+    def __init__(self):
+        self.entry_traffic = defaultdict(list)
+        self.exit_traffic = defaultdict(list)
+        self.matches = []
+    
+    def add_entry_traffic(self, entry_node_id, timestamp, bytes_received):
+        """Record traffic entering at entry node"""
+        self.entry_traffic[entry_node_id].append({
+            'timestamp': timestamp,
+            'bytes': bytes_received
+        })
+    
+    def add_exit_traffic(self, exit_node_id, timestamp, bytes_sent):
+        """Record traffic exiting at exit node"""
+        self.exit_traffic[exit_node_id].append({
+            'timestamp': timestamp,
+            'bytes': bytes_sent
+        })
+    
+    def correlate(self, time_window=5):
+        """Find matching traffic patterns"""
+        self.matches = []
+        
+        for entry_id, entry_packets in self.entry_traffic.items():
+            for exit_id, exit_packets in self.exit_traffic.items():
+                # Try to match sequences
+                matches = self._match_sequences(entry_packets, 
+                                               exit_packets, 
+                                               time_window)
+                if matches:
+                    self.matches.extend(matches)
+        
+        return self.matches
+    
+    def _match_sequences(self, entry_seq, exit_seq, window):
+        """Match packet sequences between entry and exit"""
+        matches = []
+        
+        # Simple matching: find similar traffic patterns
+        for i, entry_pkt in enumerate(entry_seq):
+            for j, exit_pkt in enumerate(exit_seq):
+                # Check if bytes match
+                if abs(entry_pkt['bytes'] - exit_pkt['bytes']) < 1000:
+                    # Check if timing is reasonable
+                    time_diff = (exit_pkt['timestamp'] - 
+                                entry_pkt['timestamp']).total_seconds()
+                    
+                    if 0 < time_diff < window:
+                        # Calculate confidence
+                        byte_match = (1 - abs(entry_pkt['bytes'] - 
+                                            exit_pkt['bytes']) / 
+                                   max(entry_pkt['bytes'], 
+                                       exit_pkt['bytes'])) * 50
+                        time_match = (1 - time_diff / window) * 50
+                        confidence = byte_match + time_match
+                        
+                        matches.append({
+                            'entry_idx': i,
+                            'exit_idx': j,
+                            'confidence': confidence,
+                            'time_diff': time_diff
+                        })
+        
+        return matches
+
+# Usage
+engine = CorrelationEngine()
+
+# Simulate receiving traffic data
+engine.add_entry_traffic('relay1', datetime(2025, 11, 11, 10, 0, 5), 1000)
+engine.add_entry_traffic('relay1', datetime(2025, 11, 11, 10, 0, 6), 500)
+
+engine.add_exit_traffic('relay10', datetime(2025, 11, 11, 10, 0, 8), 1000)
+engine.add_exit_traffic('relay10', datetime(2025, 11, 11, 10, 0, 9), 500)
+
+matches = engine.correlate()
+for match in matches:
+    print(f"Confidence: {match['confidence']:.1f}%")
+```
+
+**Phase 3: Visualization Dashboard (Week 2-3)**
+
+```python
+# visualizer.py
+import matplotlib.pyplot as plt
+import networkx as nx
+from json import load
+
+class CorrelationVisualizer:
+    def __init__(self, relay_data):
+        self.relay_data = relay_data
+        self.G = nx.DiGraph()
+    
+    def build_network_graph(self):
+        """Create network graph of TOR relays"""
+        for relay in self.relay_data['relays']:
+            node_type = 'entry' if 'Exit' not in relay.get('flags', []) else 'exit'
+            self.G.add_node(relay['fingerprint'],
+                           nickname=relay['nickname'],
+                           type=node_type,
+                           bandwidth=relay.get('bandwidth', 0))
+    
+    def visualize_correlation(self, entry_node, exit_node, confidence):
+        """Draw traced path"""
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # Create simplified graph for visualization
+        G = nx.DiGraph()
+        G.add_node(entry_node, node_type='entry')
+        G.add_node(exit_node, node_type='exit')
+        G.add_edge(entry_node, exit_node)
+        
+        # Color nodes
+        node_colors = []
+        for node in G.nodes():
+            if G.nodes[node]['node_type'] == 'entry':
+                node_colors.append('red')
+            else:
+                node_colors.append('green')
+        
+        # Draw
+        pos = nx.spring_layout(G)
+        nx.draw_networkx_nodes(G, pos, node_color=node_colors, 
+                              node_size=1000, ax=ax)
+        nx.draw_networkx_edges(G, pos, ax=ax, 
+                              arrowsize=20, width=2)
+        nx.draw_networkx_labels(G, pos, ax=ax)
+        
+        # Add title with confidence
+        ax.set_title(f'Traced Path - Confidence: {confidence:.1f}%', 
+                    fontsize=14, fontweight='bold')
+        
+        plt.tight_layout()
+        return fig
+    
+    def generate_timeline_chart(self, traffic_data):
+        """Show timeline of traffic flow"""
+        fig, ax = plt.subplots(figsize=(12, 6))
+        
+        # Extract timestamps and bytes
+        timestamps = [pkt['timestamp'] for pkt in traffic_data]
+        bytes_list = [pkt['bytes'] for pkt in traffic_data]
+        
+        # Plot
+        ax.plot(timestamps, bytes_list, marker='o', linestyle='-')
+        ax.set_xlabel('Time')
+        ax.set_ylabel('Bytes Transferred')
+        ax.set_title('Traffic Timeline')
+        
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        return fig
+```
+
+**Phase 4: Forensic Report Generator (Week 3)**
+
+```python
+# report_generator.py
+from datetime import datetime
+
+class ForensicReportGenerator:
+    def __init__(self):
+        self.findings = []
+    
+    def add_finding(self, entry_node, exit_node, confidence, 
+                   evidence):
+        """Add a finding to the report"""
+        self.finding.append({
+            'entry_node': entry_node,
+            'exit_node': exit_node,
+            'confidence': confidence,
+            'evidence': evidence,
+            'timestamp': datetime.now()
+        })
+    
+    def generate_pdf_report(self, filename):
+        """Generate exportable forensic report"""
+        report = "TOR USER TRACING ANALYSIS REPORT\n"
+        report += "=" * 60 + "\n"
+        report += f"Generated: {datetime.now()}\n"
+        report += "=" * 60 + "\n\n"
+        
+        for finding in self.findings:
+            report += "TRACED CONNECTION:\n"
+            report += "-" * 60 + "\n"
+            report += f"Entry Node: {finding['entry_node']}\n"
+            report += f"Exit Node: {finding['exit_node']}\n"
+            report += f"Confidence: {finding['confidence']:.1f}%\n"
+            report += f"Evidence:\n"
+            for evidence_item in finding['evidence']:
+                report += f"  - {evidence_item}\n"
+            report += "\n"
+        
+        with open(filename, 'w') as f:
+            f.write(report)
+        
+        return filename
+
+# Usage
+generator = ForensicReportGenerator()
+generator.add_finding(
+    entry_node='relay_guard_1',
+    exit_node='relay_exit_7',
+    confidence=87.5,
+    evidence=[
+        'Packet size match: 1000 bytes',
+        'Timing correlation: 3.2 seconds delay',
+        'Bandwidth pattern match: 95%'
+    ]
+)
+generator.generate_pdf_report('forensic_report.txt')
+```
+
+**Phase 4: Web Dashboard (Optional - for UI/UX points)**
+
+```python
+# app.py (using Flask)
+from flask import Flask, render_template, jsonify
+import json
+
+app = Flask(__name__)
+
+@app.route('/')
+def dashboard():
+    """Main dashboard page"""
+    return render_template('dashboard.html')
+
+@app.route('/api/relays')
+def get_relays():
+    """API endpoint for relay data"""
+    with open('tor_data.json') as f:
+        data = json.load(f)
+    return jsonify(data)
+
+@app.route('/api/correlations')
+def get_correlations():
+    """API endpoint for correlation results"""
+    correlations = [
+        {
+            'entry_node': 'relay_guard_1',
+            'exit_node': 'relay_exit_7',
+            'confidence': 87.5,
+            'traced_ip': '203.45.67.89'
+        }
+    ]
+    return jsonify(correlations)
+
+if __name__ == '__main__':
+    app.run(debug=True)
+```
+
+---
+
+## Team Strategy & Timeline
+
+### Before Nov 23 (Abstract Submission)
+
+**Your Abstract Should Include:**
+
+1. **Proof of Concept**
+   - Show that you can fetch TOR relay data
+   - Show that you can parse it
+   - Show one successful correlation (even if with sample data)
+
+2. **Methodology**
+   - Explain timing-based correlation approach
+   - Explain how confidence scoring works
+   - Show the algorithm logic
+
+3. **Innovation**
+   - What makes yours better than existing tools?
+   - New visualization technique?
+   - Unique confidence calculation?
+
+4. **Feasibility**
+   - Can you build this in time? YES
+   - Do you have the skills? With AI help, YES
+   - Do you have the data? YES (TOR is public)
+
+5. **Working Prototype**
+   - At minimum: Python script that
+     - Fetches TOR relay data âœ“
+     - Stores it in database âœ“
+     - Performs one correlation âœ“
+     - Generates a report âœ“
+
+### Abstract Template
+
+```
+TITLE: TOR User Deanonymization Through Traffic Correlation Analysis
+
+METHODOLOGY:
+We propose a traffic correlation system that:
+1. Collects TOR relay statistics via Onionoo API
+2. Builds timing-based fingerprints of traffic flows
+3. Correlates entry and exit node patterns
+4. Identifies probable user origin with confidence metrics
+5. Generates forensic reports for law enforcement
+
+TECHNICAL APPROACH:
+- Data source: Public Onionoo API
+- Correlation method: Timing + Volume + Packet sequence matching
+- Confidence: Multi-factor scoring algorithm
+- Output: Visualization dashboard + PDF reports
+
+WORKING PROTOTYPE FEATURES:
+- Automated TOR topology collection
+- Traffic pattern matching engine
+- Basic visualization dashboard
+- Forensic report generation
+
+INNOVATION:
+- Novel confidence scoring combining multiple metrics
+- Real-time correlation updates
+- Integration with PCAP file analysis
+```
+
+### Week-by-Week Plan
+
+**Week 1 (Nov 11-17):**
+- [ ] Learn Python basics for this project
+- [ ] Fetch data from Onionoo API
+- [ ] Store relay data in file/database
+- [ ] Create correlation engine (simple version)
+- [ ] Write abstract and submit Nov 23
+
+**Week 2 (Nov 18-23):**
+- [ ] Test correlation with real data
+- [ ] Build confidence scoring
+- [ ] Create visualization (basic charts)
+- [ ] Generate forensic reports
+- [ ] Improve accuracy
+
+**Week 3 (Nov 24-Dec 7):**
+- [ ] Build web dashboard
+- [ ] Add PCAP file parsing (if time)
+- [ ] Performance optimization
+- [ ] Prepare presentation
+
+**Week 4 (Dec 8-17):**
+- [ ] Final testing
+- [ ] Documentation
+- [ ] Presentation preparation
+- [ ] Hack until Dec 17!
+
+### Role Distribution for Your Team
+
+**Backend Developer (Most Important):**
+- Build correlation engine
+- Handle data collection
+- Database management
+- Report generation
+
+**Frontend Developer:**
+- Web dashboard
+- Visualization
+- Charts and graphs
+
+**Network/Security Expert:**
+- Understand TOR deeply
+- Explain findings
+- Validate results
+- Presentation
+
+**You Could Be:** Backend developer (using AI help to write Python code)
+
+### Success Criteria
+
+**For Abstract (Nov 23):**
+- âœ… Code that runs without errors
+- âœ… Fetches real TOR data
+- âœ… Finds at least 1 correlation
+- âœ… Shows 1 visualization
+- âœ… Generates 1 report
+
+**For Final (Dec 17):**
+- âœ… Dashboard with interactive map
+- âœ… Finds multiple correlations
+- âœ… Confidence scores explained
+- âœ… PCAP file parsing (advanced)
+- âœ… Professional presentation (15 min)
+
+---
+
+## Summary Table: Which Approach to Use?
+
+| Approach | Implementation Time | Accuracy | Difficulty | Best For |
+|----------|-------------------|----------|-----------|----------|
+| **Timing Correlation** | 1-2 weeks | 40-60% | Medium | **Hackathon â­** |
+| **Volume Analysis** | 1 week | 20-30% | Easy | Proof of concept |
+| **Network Graph** | 1 week | N/A | Easy | Visualization |
+| **ML Deanonymization** | 3-4 weeks | 70-90% | Hard | If you have time |
+| **Website Fingerprinting** | 2-3 weeks | 80% | Hard | Too complex now |
+
+**Recommendation:** Start with **Timing Correlation** approach. It's practical, achievable, and judges will understand it clearly.
+
+---
+
+## Quick Start Code
+
+Copy this to get started today:
+
+```python
+#!/usr/bin/env python3
+# quick_start.py
+
+import requests
+import json
+
+# Get TOR relay data
+print("Fetching TOR relay data...")
+response = requests.get("https://onionoo.torproject.org/summary")
+data = response.json()
+
+# Count relays
+total_relays = len(data['relays'])
+entry_relays = sum(1 for r in data['relays'] 
+                   if 'Exit' not in r.get('flags', []))
+exit_relays = sum(1 for r in data['relays'] 
+                  if 'Exit' in r.get('flags', []))
+
+print(f"\nTOR Network Statistics:")
+print(f"Total relays: {total_relays}")
+print(f"Entry guards: {entry_relays}")
+print(f"Exit relays: {exit_relays}")
+
+# Show sample relay
+print(f"\nSample Entry Relay:")
+for relay in data['relays']:
+    if 'Exit' not in relay.get('flags', []):
+        print(json.dumps(relay, indent=2)[:500])
+        break
+
+print("\nâœ… Connected to TOR network successfully!")
+```
+
+Run it:
+```bash
+python3 -m pip install requests
+python3 quick_start.py
+```
+
+You now have:
+- Real TOR data
+- Working example
+- Starting point for your project
+
+---
+
+## Final Words
+
+This is a real cybersecurity challenge. The judges will respect:
+- Working code (not perfect)
+- Clear explanation (more important than accuracy)
+- Good visualization
+- Professional presentation
+
+You have 6 weeks. With an AI assistant to help with Python coding and a motivated team, you can build something impressive.
+
+**Start coding today. Good luck! ðŸš€**
